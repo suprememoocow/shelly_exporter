@@ -1,0 +1,142 @@
+#!/usr/bin/env node
+"use strict";
+
+const shellies = require("shellies");
+const http = require("http");
+const client = require("prom-client");
+const register = client.register;
+const { program } = require("commander");
+
+const props = {
+  battery: "battery",
+  blue: "blue",
+  brightness: "brightness",
+  charging: "charging",
+  colorTemperature: "color_temperature_kelvin",
+  concentration: "concentration",
+  current: "current_amps",
+  deviceTemperature: "device_temperature_celsius",
+  energyCounter: "energy_counter_watt_minutes",
+  energyReturned: "energy_returned_watt_minutes",
+  externalHumidity: "external_humidity",
+  externalInput: "external_input",
+  externalTemperature: "external_temperature_celsius",
+  flood: "flood",
+  gain: "gain",
+  green: "green",
+  humidity: "humidity_percent",
+  illuminance: "illuminance_lux",
+  input: "input",
+  inputEventCounter: "input_event_counter",
+  loadError: "load_error",
+  motion: "motion",
+  overPower: "over_power",
+  overPowerValue: "over_power_watts",
+  overTemperature: "over_temperature",
+  power: "power_watts",
+  powerFactor: "power_factor",
+  red: "red",
+  relay: "relay",
+  rollerPosition: "roller_position",
+  sensorError: "sensor_error",
+  smoke: "smoke",
+  state: "state",
+  switch: "switch",
+  temperature: "temperature_celsius",
+  tilt: "tilt",
+  totalWorkTime: "work_time_total",
+  vibration: "vibration",
+  voltage: "voltage_volts",
+  white: "white",
+  whiteLevel: "white_level",
+};
+
+// Lazy load this
+const metrics = {};
+
+function main() {
+  program.option("-p, --port <port>", "port to listen on", "8177");
+
+  program.parse(process.argv);
+
+  const options = program.opts();
+
+  const server = http.createServer(requestListener);
+  server.listen(options.port);
+
+  discover();
+  console.log("listening on port", options.port);
+}
+
+function setDevicePropValue(device, propName, value) {
+  let m = propName.match(/^([a-zA-Z]+)(\d*)?$/);
+  if (!m) return;
+  let propPrefix = m[1];
+  let propId = m[2];
+  let gauge = metrics[propPrefix];
+  if (!gauge) {
+    const metricName = props[propPrefix];
+    if (!metricName) return;
+
+    gauge = new client.Gauge({
+      name: `shelly_${metricName}`,
+      help: metricName,
+      labelNames: ["device_id", "device_type", "id"],
+    });
+    metrics[propPrefix] = gauge;
+  }
+
+  if (value === true) {
+    value = 1;
+  } else if (value === false) {
+    value = 0;
+  } else if (value === null) {
+    value = NaN;
+  }
+
+  gauge.labels(device.id, device.type, propId || "").set(value);
+}
+
+function discover() {
+  shellies.on("discover", (device) => {
+    for (var k of device) {
+      setDevicePropValue(device, k[0], k[1]);
+    }
+
+    console.log("Discovered device with ID", device.id, "and type", device.type);
+
+    device.on("change", (prop, newValue) => {
+      setDevicePropValue(device, prop, newValue);
+    });
+
+    device.on("offline", () => {
+      // Delete the series would be better...
+      for (var k of device) {
+        setDevicePropValue(device, k[0], null);
+      }
+    });
+  });
+
+  // start discovering devices and listening for status updates
+  shellies.start();
+}
+
+function requestListener(req, res) {
+  if (req.url === "/metrics") {
+    register
+      .metrics()
+      .then((content) => {
+        res.writeHead(200);
+        res.end(content);
+      })
+      .catch((e) => {
+        res.writeHead(500);
+        res.end();
+      });
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
+}
+
+main();
